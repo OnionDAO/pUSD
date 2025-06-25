@@ -89,7 +89,7 @@ export class GillTokenManager {
       // Get metadata address
       const metadataAddress = await getTokenMetadataAddress(mint);
 
-      // Build transaction instructions
+      // Build transaction instructions - just create the mint for now
       const instructions = [
         // Create account instruction
         getCreateAccountInstruction({
@@ -109,27 +109,7 @@ export class GillTokenManager {
             decimals: options.decimals || TOKEN_CONSTANTS.DECIMALS
           },
           { programAddress: this.tokenProgram }
-        ),
-
-        // Create metadata instruction
-        getCreateMetadataAccountV3Instruction({
-          collectionDetails: null,
-          isMutable: options.isMutable ?? true,
-          updateAuthority: payer,
-          mint: mint.address,
-          metadata: metadataAddress,
-          mintAuthority: payer,
-          payer,
-          data: {
-            sellerFeeBasisPoints: 0,
-            collection: null,
-            creators: null,
-            uses: null,
-            name: options.name,
-            symbol: options.symbol,
-            uri: options.uri || `https://raw.githubusercontent.com/your-repo/pUSD/main/metadata/${options.symbol.toLowerCase()}.json`
-          }
-        })
+        )
       ];
 
       // Create transaction
@@ -145,6 +125,7 @@ export class GillTokenManager {
       const signature = await sendAndConfirmTransaction(signedTransaction);
 
       logger.info(`Created token: ${mint.address} with signature: ${signature}`);
+      logger.info(`Metadata address: ${metadataAddress} (can be added later)`);
       
       return {
         mint,

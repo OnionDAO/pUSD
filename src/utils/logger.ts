@@ -14,9 +14,21 @@ class Logger {
 
   private formatMessage(level: string, message: string, ...args: any[]): string {
     const timestamp = new Date().toISOString();
-    const formattedArgs = args.length > 0 ? ` ${args.map(arg => 
-      typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
-    ).join(' ')}` : '';
+    const formattedArgs = args.length > 0 ? ` ${args.map(arg => {
+      if (typeof arg === 'bigint') {
+        return arg.toString();
+      }
+      if (typeof arg === 'object') {
+        try {
+          return JSON.stringify(arg, (key, value) => 
+            typeof value === 'bigint' ? value.toString() : value
+          , 2);
+        } catch {
+          return String(arg);
+        }
+      }
+      return String(arg);
+    }).join(' ')}` : '';
     return `[${timestamp}] ${level}: ${message}${formattedArgs}`;
   }
 
