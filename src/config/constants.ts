@@ -1,4 +1,5 @@
 import { PublicKey } from '@solana/web3.js';
+import { DEVNET, MAINNET } from './networks';
 
 // Network constants
 export const NETWORKS = {
@@ -11,14 +12,14 @@ export const NETWORKS = {
 // Default network
 export const DEFAULT_NETWORK = NETWORKS.DEVNET;
 
-// Program IDs
+// Program IDs (from networks)
 export const PROGRAM_IDS = {
-  TOKEN_PROGRAM: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
-  TOKEN_2022_PROGRAM: new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'),
-  ASSOCIATED_TOKEN_PROGRAM: new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'),
-  SYSTEM_PROGRAM: new PublicKey('11111111111111111111111111111111'),
-  RENT: new PublicKey('SysvarRent111111111111111111111111111111111'),
-  METADATA_PROGRAM: new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s'),
+  TOKEN_PROGRAM: new PublicKey(DEVNET.TOKEN_PROGRAM),
+  TOKEN_2022_PROGRAM: new PublicKey(DEVNET.TOKEN_2022_PROGRAM),
+  ASSOCIATED_TOKEN_PROGRAM: new PublicKey(DEVNET.ASSOCIATED_TOKEN_PROGRAM),
+  SYSTEM_PROGRAM: new PublicKey(DEVNET.SYSTEM_PROGRAM),
+  RENT: new PublicKey(DEVNET.RENT),
+  METADATA_PROGRAM: new PublicKey(DEVNET.METADATA_PROGRAM),
 } as const;
 
 // Token constants

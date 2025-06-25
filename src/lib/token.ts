@@ -22,10 +22,12 @@ import {
   TOKEN_PROGRAM_ADDRESS,    
   TOKEN_2022_PROGRAM_ADDRESS
 } from "gill/programs";
-import { Connection, PublicKey } from '@solana/web3.js';
+import { Connection, PublicKey, Keypair } from '@solana/web3.js';
 import { TOKEN_CONSTANTS } from '../config/constants';
 import { TransactionResult } from '../types/transaction';
 import { logger } from '../utils/logger';
+import * as Confidential from './confidential';
+import { ElGamal } from '@solana/spl-token';
 
 export interface TokenCreationOptions {
   name: string;
@@ -251,5 +253,32 @@ export class GillTokenManager {
       logger.error('Failed to get mint info:', error);
       throw error;
     }
+  }
+}
+
+export namespace GillTokenManagerConf {
+  export const createConfAccount = Confidential.createConfAccount;
+  export const depositConfidential = Confidential.depositConfidential;
+  export const applyPending = Confidential.applyPending;
+  export const confidentialTransfer = Confidential.confidentialTransfer;
+  export const withdrawConfidential = Confidential.withdrawConfidential;
+
+  // Helper to get and decrypt confidential balance
+  export async function getConfBalance(
+    connection: Connection,
+    owner: PublicKey,
+    mint: PublicKey,
+    elgamalSecretKey: Uint8Array
+  ): Promise<bigint> {
+    // Fetch the associated token account
+    const ata = await Confidential.createConfAccount(connection, owner, mint, Keypair.generate());
+    const accountInfo = await connection.getAccountInfo(ata);
+    if (!accountInfo) throw new Error('Account not found');
+    // The confidential balance is stored in the extension data
+    // This is a placeholder; actual implementation may require parsing extension data
+    // and using ElGamal.decrypt
+    // TODO: Replace with actual confidential balance extraction logic
+    const encryptedBalance = new Uint8Array(); // placeholder
+    return ElGamal.decrypt(encryptedBalance, elgamalSecretKey);
   }
 }

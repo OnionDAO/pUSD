@@ -13,11 +13,12 @@
     "@solana/spl-token-group": "^0.0.7",
     "@solana/spl-token-metadata": "^0.1.6",
     "@solana/web3.js": "^1.98.2",
-    "gill": "^0.10.2"
+    "gill": "^0.10.2",
+    "yargs": "^18.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
-    "typescript": "^5.7.2",
-    "tsx": "^4.19.2"
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
   }
 }
