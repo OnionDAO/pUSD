@@ -51,3 +51,10 @@ export const ERROR_MESSAGES = {
   NETWORK_ERROR: 'Network error',
   INVALID_KEYPAIR: 'Invalid keypair',
 } as const;
+
+
+const PUSD_CONFIG = {
+    mint: "8GzpAzmBLSHsNQhGFwhokEDziXJAQm7C9P7x3YQYqf4x",
+    network: "devnet",
+    program: "Token2022"
+  };
