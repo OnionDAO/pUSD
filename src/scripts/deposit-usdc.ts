@@ -1,7 +1,9 @@
 import { Connection, PublicKey, Keypair } from '@solana/web3.js';
 import { ReserveManager } from '../lib/reserves';
 import * as fs from 'fs';
+// @ts-ignore
 import yargs from 'yargs';
+// @ts-ignore
 import { hideBin } from 'yargs/helpers';
 
 const argv = yargs(hideBin(process.argv))

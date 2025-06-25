@@ -1,10 +1,6 @@
-import { createSolanaClient } from "gill";
-import { Connection, PublicKey, Keypair } from '@solana/web3.js';
-import { GillTokenManager, GillTokenManagerConf } from "../lib/token";
-import { logger } from "../utils/logger";
-import * as fs from 'fs';
-import yargs from 'yargs';
-import { hideBin } from 'yargs/helpers';
+const confidential = require('../lib/confidential');
+const yargs = require('yargs');
+const { hideBin } = require('yargs/helpers');
 
 const argv = yargs(hideBin(process.argv))
   .option('mint', { type: 'string', demandOption: true, describe: 'Token mint address' })
@@ -14,42 +10,39 @@ const argv = yargs(hideBin(process.argv))
   .option('confidential', { type: 'boolean', default: false, describe: 'Use confidential transfer' })
   .option('network', { type: 'string', default: 'devnet', choices: ['devnet', 'mainnet'], describe: 'Solana network' })
   .strict()
-  .argv as any;
+  .argv;
 
-function loadKeypair(path: string): Keypair {
+
+function loadPubkeyFromKeypairFile(path) {
+  const fs = require('fs');
   const raw = fs.readFileSync(path, 'utf-8');
   const arr = JSON.parse(raw);
-  return Keypair.fromSecretKey(new Uint8Array(arr));
+  // Assumes standard Solana keypair file
+  const { PublicKey } = require('@solana/web3.js');
+  return new PublicKey(arr.slice(32, 64)).toBase58();
 }
 
 async function main() {
   try {
-    logger.info("🪙 Minting pUSD tokens...");
-    const endpoint = argv.network === 'mainnet'
-      ? 'https://api.mainnet-beta.solana.com'
-      : 'https://api.devnet.solana.com';
-    const client = createSolanaClient({ urlOrMoniker: endpoint });
-    const connection = new Connection(endpoint, 'confirmed');
-    const payer = loadKeypair(argv.payer);
-    const user = loadKeypair(argv.user);
-    const mint = new PublicKey(argv.mint);
-    const tokenManager = new GillTokenManager(client, connection, true);
+    console.log('🪙 Minting pUSD tokens using confidential CLI...');
+    const mintPubkey = argv.mint;
+    const payerPubkey = loadPubkeyFromKeypairFile(argv.payer);
+    const userPubkey = loadPubkeyFromKeypairFile(argv.user);
     if (argv.confidential) {
-      logger.info('🔒 Using confidential transfer for minting');
-      // Create confidential account for user if needed
-      const ata = await GillTokenManagerConf.createConfAccount(connection, user.publicKey, mint, payer);
+      console.log('🔒 Using confidential transfer for minting');
+      // Create account for user if needed
+      confidential.createAccount(mintPubkey, userPubkey, argv.payer);      // Configure account for confidential transfers
+      confidential.configureConfidentialAccount(userPubkey);
       // Deposit confidential amount
-      const sig = await GillTokenManagerConf.depositConfidential(connection, user.publicKey, ata, BigInt(argv.amount), payer);
-      logger.info(`Confidential deposit signature: ${sig}`);
+      confidential.depositConfidentialTokens(mintPubkey, argv.amount, userPubkey);
       // Apply pending balance
-      const sig2 = await GillTokenManagerConf.applyPending(connection, user.publicKey, ata, payer);
-      logger.info(`Apply pending signature: ${sig2}`);
+      confidential.applyPendingBalance(userPubkey);
     } else {
-      logger.info('Minting not implemented for non-confidential mode in this script.');
+      console.log('Minting not implemented for non-confidential mode in this script.');
     }
-    logger.info('✅ Minting process completed.');
+    console.log('✅ Minting process completed.');
   } catch (error) {
-    logger.error('❌ Failed to mint tokens:', error);
+    console.error('❌ Failed to mint tokens:', error);
     process.exit(1);
   }
 }

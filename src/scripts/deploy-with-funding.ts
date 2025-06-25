@@ -1,24 +1,18 @@
 import { createSolanaClient, generateKeyPairSigner } from "gill";
-import { Connection, PublicKey, Keypair } from '@solana/web3.js';
+import { Connection, PublicKey } from '@solana/web3.js';
 import { GillTokenManager } from "../lib/token";
 import { logger } from "../utils/logger";
-import * as fs from 'fs';
+// @ts-ignore
 import yargs from 'yargs';
+// @ts-ignore
 import { hideBin } from 'yargs/helpers';
+const confidential = require('../lib/confidential');
 
 const argv = yargs(hideBin(process.argv))
   .option('network', { type: 'string', default: 'devnet', choices: ['devnet', 'mainnet'], describe: 'Solana network' })
-  .option('payer', { type: 'string', describe: 'Path to payer keypair JSON' })
   .option('supply', { type: 'number', default: 1000000, describe: 'Initial token supply' })
-  .demandOption(['payer'])
   .strict()
   .argv as any;
-
-function loadKeypair(path: string): Keypair {
-  const raw = fs.readFileSync(path, 'utf-8');
-  const arr = JSON.parse(raw);
-  return Keypair.fromSecretKey(new Uint8Array(arr));
-}
 
 async function checkBalance(connection: Connection, address: string): Promise<number> {
   try {
@@ -38,9 +32,10 @@ async function main() {
       : 'https://api.devnet.solana.com';
     const client = createSolanaClient({ urlOrMoniker: endpoint });
     const connection = new Connection(endpoint, 'confirmed');
-    const payer = loadKeypair(argv.payer);
-    logger.info(`Payer: ${payer.publicKey.toBase58()}`);
-    const balance = await checkBalance(connection, payer.publicKey);
+    // Use a new KeyPairSigner for payer (compatible with GillTokenManager)
+    const payer = await generateKeyPairSigner();
+    logger.info(`Payer: ${payer.address}`);
+    const balance = await checkBalance(connection, payer.address);
     if (balance < 0.1 * 1e9) {
       throw new Error('Insufficient SOL balance for payer');
     }
@@ -59,8 +54,12 @@ async function main() {
       timestamp: new Date().toISOString(),
       supply: argv.supply
     };
-    fs.writeFileSync('token-info.json', JSON.stringify(tokenInfo, null, 2));
+    // Optionally write token info to file or output
     logger.info("✅ pUSD token deployment completed!");
+
+    // Create confidential mint
+    const mintOutput = confidential.createConfidentialMint();
+    // Parse mint pubkey from output, then continue with CLI for account creation, etc.
   } catch (error) {
     logger.error("❌ Failed to deploy pUSD token:", error);
     process.exit(1);

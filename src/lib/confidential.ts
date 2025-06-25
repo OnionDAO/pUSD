@@ -1,119 +1,108 @@
-import {
-  Connection,
-  PublicKey,
-  Keypair,
-  Transaction,
-  sendAndConfirmTransaction,
-  TransactionInstruction,
-} from '@solana/web3.js';
-import {
-  createAssociatedTokenAccountInstruction,
-  getAssociatedTokenAddressSync,
-  ExtensionType,
-  TOKEN_2022_PROGRAM_ID,
-  createInitializeMintInstruction,
-  getMintLen,
-  createMintToInstruction,
-} from '@solana/spl-token';
+// src/lib/confidential.ts - Node.js automation for Token-2022 Confidential Transfers using Solana CLI
 
-// Helper to manually encode confidential transfer instructions
-function encodeConfidentialTransferInstruction(/* params */): TransactionInstruction {
-  // TODO: Implement manual encoding for confidential transfer
-  throw new Error('Confidential transfer not implemented: manual encoding required');
+const { execSync } = require('child_process');
+const { logger } = require('../utils/logger');
+
+/**
+ * Run a shell command and log output
+ * @param {string} cmd
+ * @returns {string}
+ */
+function runCmd(cmd: string): string {
+  logger.info(`Running: ${cmd}`);
+  try {
+    const output = execSync(cmd, { stdio: 'pipe' });
+    logger.info(output.toString());
+    return output.toString();
+  } catch (error: any) {
+    logger.error(`Command failed: ${cmd}`);
+    logger.error(error.stderr ? error.stderr.toString() : error.message);
+    throw error;
+  }
 }
 
-function encodeDepositConfidentialInstruction(/* params */): TransactionInstruction {
-  // TODO: Implement manual encoding for deposit confidential
-  throw new Error('Deposit confidential not implemented: manual encoding required');
+/**
+ * Create a mint with confidential transfers enabled
+ * @returns {string}
+ */
+function createConfidentialMint(): string {
+  const cmd = 'spl-token --program-id TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb create-token --enable-confidential-transfers auto';
+  return runCmd(cmd);
 }
 
-function encodeApplyPendingBalanceInstruction(/* params */): TransactionInstruction {
-  // TODO: Implement manual encoding for apply pending balance
-  throw new Error('Apply pending balance not implemented: manual encoding required');
+/**
+ * Create a token account for a given mint
+ * @param {string} mintPubkey
+ * @returns {string}
+ */
+function createAccount(mintPubkey: string): string {
+  const cmd = `spl-token create-account ${mintPubkey}`;
+  return runCmd(cmd);
 }
 
-function encodeWithdrawConfidentialInstruction(/* params */): TransactionInstruction {
-  // TODO: Implement manual encoding for withdraw confidential
-  throw new Error('Withdraw confidential not implemented: manual encoding required');
+/**
+ * Configure a token account for confidential transfers
+ * @param {string} accountPubkey
+ * @returns {string}
+ */
+function configureConfidentialAccount(accountPubkey: string): string {
+  const cmd = `spl-token configure-confidential-transfer-account --address ${accountPubkey}`;
+  return runCmd(cmd);
 }
 
-// Create a confidential transfer account for the owner
-export async function createConfAccount(
-  connection: Connection,
-  owner: PublicKey,
-  mint: PublicKey,
-  payer: Keypair
-): Promise<PublicKey> {
-  const ata = getAssociatedTokenAddressSync(mint, owner, false, TOKEN_2022_PROGRAM_ID);
-  const tx = new Transaction();
-  tx.add(
-    createAssociatedTokenAccountInstruction(
-      payer.publicKey,
-      ata,
-      owner,
-      mint,
-      TOKEN_2022_PROGRAM_ID
-    ),
-    // TODO: Add manual instruction for initializing confidential transfer account
-  );
-  await sendAndConfirmTransaction(connection, tx, [payer]);
-  return ata;
+/**
+ * Deposit tokens into confidential balance
+ * @param {string} mintPubkey
+ * @param {string|number} amount
+ * @param {string} accountPubkey
+ * @returns {string}
+ */
+function depositConfidentialTokens(mintPubkey: string, amount: string | number, accountPubkey: string): string {
+  const cmd = `spl-token deposit-confidential-tokens ${mintPubkey} ${amount} --address ${accountPubkey}`;
+  return runCmd(cmd);
 }
 
-export async function depositConfidential(
-  connection: Connection,
-  owner: PublicKey,
-  ata: PublicKey,
-  amount: bigint,
-  payer: Keypair
-): Promise<string> {
-  const tx = new Transaction();
-  tx.add(
-    encodeDepositConfidentialInstruction(/* params */)
-  );
-  const sig = await sendAndConfirmTransaction(connection, tx, [payer]);
-  return sig;
+/**
+ * Apply pending balance
+ * @param {string} accountPubkey
+ * @returns {string}
+ */
+function applyPendingBalance(accountPubkey: string): string {
+  const cmd = `spl-token apply-pending-balance --address ${accountPubkey}`;
+  return runCmd(cmd);
 }
 
-export async function applyPending(
-  connection: Connection,
-  owner: PublicKey,
-  ata: PublicKey,
-  payer: Keypair
-): Promise<string> {
-  const tx = new Transaction();
-  tx.add(
-    encodeApplyPendingBalanceInstruction(/* params */)
-  );
-  const sig = await sendAndConfirmTransaction(connection, tx, [payer]);
-  return sig;
+/**
+ * Transfer confidential tokens
+ * @param {string} mintPubkey
+ * @param {string|number} amount
+ * @param {string} destinationPubkey
+ * @returns {string}
+ */
+function transferConfidentialTokens(mintPubkey: string, amount: string | number, destinationPubkey: string): string {
+  const cmd = `spl-token transfer ${mintPubkey} ${amount} ${destinationPubkey} --confidential`;
+  return runCmd(cmd);
 }
 
-export async function confidentialTransfer(
-  connection: Connection,
-  source: PublicKey,
-  destination: PublicKey,
-  owner: Keypair,
-  amount: bigint
-): Promise<string> {
-  const tx = new Transaction();
-  tx.add(
-    encodeConfidentialTransferInstruction(/* params */)
-  );
-  const sig = await sendAndConfirmTransaction(connection, tx, [owner]);
-  return sig;
+/**
+ * Withdraw confidential tokens
+ * @param {string} mintPubkey
+ * @param {string|number} amount
+ * @param {string} accountPubkey
+ * @returns {string}
+ */
+function withdrawConfidentialTokens(mintPubkey: string, amount: string | number, accountPubkey: string): string {
+  const cmd = `spl-token withdraw-confidential-tokens ${mintPubkey} ${amount} --address ${accountPubkey}`;
+  return runCmd(cmd);
 }
 
-export async function withdrawConfidential(
-  connection: Connection,
-  ata: PublicKey,
-  owner: Keypair,
-  amount: bigint
-): Promise<string> {
-  const tx = new Transaction();
-  tx.add(
-    encodeWithdrawConfidentialInstruction(/* params */)
-  );
-  const sig = await sendAndConfirmTransaction(connection, tx, [owner]);
-  return sig;
-}
+// Export all automation functions
+module.exports = {
+  createConfidentialMint,
+  createAccount,
+  configureConfidentialAccount,
+  depositConfidentialTokens,
+  applyPendingBalance,
+  transferConfidentialTokens,
+  withdrawConfidentialTokens,
+};
