@@ -1,6 +1,34 @@
-import { Connection, Keypair, PublicKey, Transaction, SystemProgram, sendAndConfirmTransaction, TransactionInstruction } from '@solana/web3.js';
-import { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, getMint, createTransferInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, createMintToInstruction, createBurnInstruction } from '@solana/spl-token';
-import * as fs from 'fs';
+/**
+ * TreasuryService.ts
+ *
+ * A robust client-side service for 1:1 USDC ↔ pUSDC conversion, fully collateralized by on-chain USDC treasury reserves.
+ * Features:
+ *  - Deterministic conversion with decimal invariants to prevent peg drift.
+ *  - On-demand invariant checks comparing pUSDC mint supply to USDC reserves.
+ *  - Atomic transaction builders returning both Transaction and required signers.
+ *  - Async, error-wrapped file operations for keypair management.
+ *  - Explicit fee payer and blockhash injection.
+ */
+
+import {
+  Connection,
+  Keypair,
+  PublicKey,
+  Transaction,
+  sendAndConfirmTransaction,
+  BlockhashWithExpiryBlockHeight,
+} from '@solana/web3.js';
+import {
+  getAssociatedTokenAddress,
+  createAssociatedTokenAccountInstruction,
+  getMint,
+  createTransferInstruction,
+  createMintToInstruction,
+  createBurnInstruction,
+  TOKEN_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+} from '@solana/spl-token';
+import { promises as fs } from 'fs';
 import * as path from 'path';
 
 /**
@@ -10,235 +38,209 @@ export const USDC_MINT = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyT
 export const PUSDC_MINT = new PublicKey('AhYwvKyAZYQeb9fZ1GMqt9PqWo1msdCsMtBFfHvnHKh');
 export const USDC_DECIMALS = 6;
 export const PUSDC_DECIMALS = 9;
+const DECIMAL_MULTIPLIER = 10 ** (PUSDC_DECIMALS - USDC_DECIMALS);
 
 const TREASURY_KEYPAIR_PATH = path.resolve(__dirname, '../../keypairs/treasury.json');
 
 /**
- * Utility to load or generate a treasury authority keypair.
+ * Load existing or generate new keypair for the treasury authority.
+ * Ensures the keypair directory exists and surfaces IO errors.
  */
-function loadOrGenerateTreasuryKeypair(): Keypair {
-  if (fs.existsSync(TREASURY_KEYPAIR_PATH)) {
-    const raw = fs.readFileSync(TREASURY_KEYPAIR_PATH, 'utf-8');
-    const arr = JSON.parse(raw);
-    return Keypair.fromSecretKey(Uint8Array.from(arr));
-  } else {
+async function loadOrGenerateTreasuryKeypair(): Promise<Keypair> {
+  try {
+    await fs.mkdir(path.dirname(TREASURY_KEYPAIR_PATH), { recursive: true });
+    const exists = await fs.stat(TREASURY_KEYPAIR_PATH).then(() => true).catch(() => false);
+    if (exists) {
+      const secret = JSON.parse(await fs.readFile(TREASURY_KEYPAIR_PATH, 'utf-8')) as number[];
+      return Keypair.fromSecretKey(Uint8Array.from(secret));
+    }
     const kp = Keypair.generate();
-    fs.mkdirSync(path.dirname(TREASURY_KEYPAIR_PATH), { recursive: true });
-    fs.writeFileSync(TREASURY_KEYPAIR_PATH, JSON.stringify(Array.from(kp.secretKey)), 'utf-8');
+    await fs.writeFile(TREASURY_KEYPAIR_PATH, JSON.stringify(Array.from(kp.secretKey)));
     return kp;
+  } catch (err) {
+    throw new Error(`Failed loading treasury keypair: ${(err as Error).message}`);
   }
 }
 
 /**
- * Utility to get or create an associated token account.
+ * Ensure an associated token account exists for a given mint and owner.
+ * Returns the ATA public key.
  */
-export async function getOrCreateATA(
+async function getOrCreateATA(
   connection: Connection,
   mint: PublicKey,
   owner: PublicKey,
-  payer: PublicKey
+  payer: Keypair
 ): Promise<PublicKey> {
-  const ata = await getAssociatedTokenAddress(mint, owner, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
-  const accountInfo = await connection.getAccountInfo(ata);
-  if (!accountInfo) {
-    const ix = createAssociatedTokenAccountInstruction(
-      payer,
-      ata,
-      owner,
-      mint,
-      TOKEN_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    );
-    const tx = new Transaction().add(ix);
-    await sendAndConfirmTransaction(connection, tx, [Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(TREASURY_KEYPAIR_PATH, 'utf-8'))))]);
-  }
+  const ata = await getAssociatedTokenAddress(mint, owner);
+  const info = await connection.getAccountInfo(ata);
+  if (info) return ata;
+
+  const ix = createAssociatedTokenAccountInstruction(
+    payer.publicKey,
+    ata,
+    owner,
+    mint,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  const { blockhash, lastValidBlockHeight }: BlockhashWithExpiryBlockHeight =
+    await connection.getLatestBlockhash();
+
+  const tx = new Transaction({
+    feePayer: payer.publicKey,
+    blockhash,
+    lastValidBlockHeight,
+  }).add(ix);
+
+  await sendAndConfirmTransaction(connection, tx, [payer]);
   return ata;
 }
 
 /**
- * Utility to fetch SPL token balance for a given owner.
+ * Convert UI amount to atomic units, enforcing integer representation.
  */
-export async function getTokenBalance(
-  connection: Connection,
-  mint: PublicKey,
-  owner: PublicKey
-): Promise<bigint> {
-  const ata = await getAssociatedTokenAddress(mint, owner);
-  const accountInfo = await connection.getTokenAccountBalance(ata).catch(() => null);
-  if (!accountInfo) return BigInt(0);
-  return BigInt(accountInfo.value.amount);
+function toAtomic(amount: number, decimals: number): bigint {
+  const units = amount * 10 ** decimals;
+  if (!Number.isInteger(units) || units < 0) {
+    throw new Error(`Invalid amount ${amount} for decimals ${decimals}`);
+  }
+  return BigInt(units);
 }
 
 /**
  * TreasuryService handles treasury setup and deposit/withdrawal logic.
  */
 export class TreasuryService {
-  treasuryKeypair: Keypair;
-  treasuryAuthority: PublicKey;
-  treasuryUSDC: PublicKey | null = null;
+  private treasuryKeypair!: Keypair;
+  public treasuryAuthority!: PublicKey;
+  private treasuryUSDC!: PublicKey;
 
-  constructor() {
-    this.treasuryKeypair = loadOrGenerateTreasuryKeypair();
-    this.treasuryAuthority = this.treasuryKeypair.publicKey;
-  }
+  constructor(private connection: Connection) {}
 
   /**
-   * Ensure the treasury USDC account exists, create if not.
+   * Initialize treasury authority and USDC account, then verify peg invariant.
    */
-  async initTreasuryUSDCAccount(connection: Connection): Promise<PublicKey> {
-    if (this.treasuryUSDC) return this.treasuryUSDC;
+  public async init(): Promise<void> {
+    this.treasuryKeypair = await loadOrGenerateTreasuryKeypair();
+    this.treasuryAuthority = this.treasuryKeypair.publicKey;
     this.treasuryUSDC = await getOrCreateATA(
-      connection,
+      this.connection,
       USDC_MINT,
       this.treasuryAuthority,
-      this.treasuryAuthority
+      this.treasuryKeypair
     );
-    return this.treasuryUSDC;
+
+    // Verify initial invariant
+    if (!(await this.checkPegInvariant())) {
+      console.warn('Warning: pUSDC supply does not match collateral reserves at init');
+    }
   }
 
   /**
-   * Construct a deposit transaction (user deposits USDC, receives pUSDC)
-   * @param connection Solana connection
-   * @param user User's public key
-   * @param amount Amount of USDC to deposit (in USDC units, e.g. 1.23)
-   * @param opts Optional: slippage, min/max, etc.
-   * @returns Transaction for the user to sign
-   * @throws Error if user balance is insufficient or limits are violated
+   * Build a transaction to deposit USDC and mint pUSDC one-to-one.
+   * Returns the transaction along with signers required.
    */
-  async depositUSDC(
-    connection: Connection,
+  public async buildDepositTx(
     user: PublicKey,
-    amount: number,
-    opts?: { min?: number; max?: number; slippageBps?: number }
-  ): Promise<Transaction> {
-    if (amount <= 0) throw new Error('Deposit amount must be positive');
-    if (opts?.min !== undefined && amount < opts.min) throw new Error(`Deposit below minimum: ${opts.min}`);
-    if (opts?.max !== undefined && amount > opts.max) throw new Error(`Deposit above maximum: ${opts.max}`);
-    // Slippage: for 1:1, only relevant if you want to enforce exact minting
-    const usdcAmount = BigInt(Math.round(amount * 10 ** USDC_DECIMALS));
-    const pusdcAmount = BigInt(Math.round(amount * 10 ** PUSDC_DECIMALS));
-    // Check user USDC balance
-    const userUSDCBal = await getTokenBalance(connection, USDC_MINT, user);
-    if (userUSDCBal < usdcAmount) throw new Error('Insufficient USDC balance');
-    // Ensure treasury USDC account exists
-    const treasuryUSDC = await this.initTreasuryUSDCAccount(connection);
-    // Ensure user USDC ATA exists
-    const userUSDC = await getOrCreateATA(connection, USDC_MINT, user, user);
-    // Ensure user pUSDC ATA exists
-    const userPUSDC = await getOrCreateATA(connection, PUSDC_MINT, user, user);
-    // Build transaction
-    const tx = new Transaction();
-    // 1. Transfer USDC from user to treasury
-    tx.add(
-      createTransferInstruction(
-        userUSDC,
-        treasuryUSDC,
-        user,
-        Number(usdcAmount),
-        [],
-        TOKEN_PROGRAM_ID
+    uiAmount: number
+  ): Promise<{ tx: Transaction; signers: Keypair[] }> {
+    if (uiAmount <= 0) throw new Error('Deposit amount must be positive');
+
+    const usdcUnits = toAtomic(uiAmount, USDC_DECIMALS);
+    const pusdcUnits = usdcUnits * BigInt(DECIMAL_MULTIPLIER);
+
+    // Fetch balances
+    const userUSDCATA = await getOrCreateATA(this.connection, USDC_MINT, user, this.treasuryKeypair);
+    const userPUSDCATA = await getOrCreateATA(this.connection, PUSDC_MINT, user, this.treasuryKeypair);
+    const userBal = await this.connection.getTokenAccountBalance(userUSDCATA).then(r => BigInt(r.value.amount));
+    if (userBal < usdcUnits) throw new Error('Insufficient USDC balance');
+
+    // Build tx
+    const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash();
+    const tx = new Transaction({
+      feePayer: user,
+      blockhash,
+      lastValidBlockHeight,
+    })
+      .add(
+        createTransferInstruction(
+          userUSDCATA,
+          this.treasuryUSDC,
+          user,
+          Number(usdcUnits)
+        )
       )
-    );
-    // 2. Mint pUSDC to user (treasury is mint authority)
-    tx.add(
-      createMintToInstruction(
-        PUSDC_MINT,
-        userPUSDC,
-        this.treasuryAuthority,
-        Number(pusdcAmount),
-        [],
-        TOKEN_PROGRAM_ID
-      )
-    );
-    return tx;
+      .add(
+        createMintToInstruction(
+          PUSDC_MINT,
+          userPUSDCATA,
+          this.treasuryAuthority,
+          Number(pusdcUnits)
+        )
+      );
+
+    return { tx, signers: [this.treasuryKeypair] };
   }
 
   /**
-   * Construct a withdrawal transaction (user burns pUSDC, receives USDC)
-   * @param connection Solana connection
-   * @param user User's public key
-   * @param amount Amount of pUSDC to redeem (in pUSDC units, e.g. 1.23)
-   * @param opts Optional: slippage, min/max, etc.
-   * @returns Transaction for the user to sign
-   * @throws Error if user/treasury balance is insufficient or limits are violated
+   * Build a transaction to burn pUSDC and withdraw USDC one-to-one.
    */
-  async withdrawUSDC(
-    connection: Connection,
+  public async buildWithdrawTx(
     user: PublicKey,
-    amount: number,
-    opts?: { min?: number; max?: number; slippageBps?: number }
-  ): Promise<Transaction> {
-    if (amount <= 0) throw new Error('Withdraw amount must be positive');
-    if (opts?.min !== undefined && amount < opts.min) throw new Error(`Withdraw below minimum: ${opts.min}`);
-    if (opts?.max !== undefined && amount > opts.max) throw new Error(`Withdraw above maximum: ${opts.max}`);
-    const pusdcAmount = BigInt(Math.round(amount * 10 ** PUSDC_DECIMALS));
-    const usdcAmount = BigInt(Math.round(amount * 10 ** USDC_DECIMALS));
-    // Check user pUSDC balance
-    const userPUSDCBal = await getTokenBalance(connection, PUSDC_MINT, user);
-    if (userPUSDCBal < pusdcAmount) throw new Error('Insufficient pUSDC balance');
-    // Check treasury USDC reserves
-    const reserves = await this.getTreasuryReserves(connection);
-    if (reserves < usdcAmount) throw new Error('Treasury has insufficient USDC reserves');
-    // Ensure treasury USDC account exists
-    const treasuryUSDC = await this.initTreasuryUSDCAccount(connection);
-    // Ensure user USDC ATA exists
-    const userUSDC = await getOrCreateATA(connection, USDC_MINT, user, user);
-    // Ensure user pUSDC ATA exists
-    const userPUSDC = await getOrCreateATA(connection, PUSDC_MINT, user, user);
-    // Build transaction
-    const tx = new Transaction();
-    // 1. Burn pUSDC from user (treasury is mint authority)
-    tx.add(
-      createBurnInstruction(
-        userPUSDC,
-        PUSDC_MINT,
-        user,
-        Number(pusdcAmount),
-        [],
-        TOKEN_PROGRAM_ID
+    uiAmount: number
+  ): Promise<{ tx: Transaction; signers: Keypair[] }> {
+    if (uiAmount <= 0) throw new Error('Withdraw amount must be positive');
+
+    const pusdcUnits = toAtomic(uiAmount, PUSDC_DECIMALS);
+    const usdcUnits = toAtomic(uiAmount, USDC_DECIMALS);
+
+    // Fetch balances
+    const userPUSDCATA = await getOrCreateATA(this.connection, PUSDC_MINT, user, this.treasuryKeypair);
+    const userPBal = await this.connection.getTokenAccountBalance(userPUSDCATA).then(r => BigInt(r.value.amount));
+    if (userPBal < pusdcUnits) throw new Error('Insufficient pUSDC balance');
+
+    const treasuryBal = await this.connection.getTokenAccountBalance(this.treasuryUSDC).then(r => BigInt(r.value.amount));
+    if (treasuryBal < usdcUnits) throw new Error('Treasury undercollateralized');
+
+    const userUSDCATA = await getOrCreateATA(this.connection, USDC_MINT, user, this.treasuryKeypair);
+
+    // Build tx
+    const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash();
+    const tx = new Transaction({
+      feePayer: user,
+      blockhash,
+      lastValidBlockHeight,
+    })
+      .add(
+        createBurnInstruction(
+          userPUSDCATA,
+          PUSDC_MINT,
+          user,
+          Number(pusdcUnits)
+        )
       )
+      .add(
+        createTransferInstruction(
+          this.treasuryUSDC,
+          userUSDCATA,
+          this.treasuryAuthority,
+          Number(usdcUnits)
+        )
+      );
+
+    return { tx, signers: [this.treasuryKeypair] };
+  }
+
+  /**
+   * Check if total pUSDC supply equals USDC reserves × multiplier.
+   */
+  public async checkPegInvariant(): Promise<boolean> {
+    const mintInfo = await getMint(this.connection, PUSDC_MINT);
+    const totalSupply = BigInt(mintInfo.supply.toString());
+    const reserves = BigInt(
+      (await this.connection.getTokenAccountBalance(this.treasuryUSDC)).value.amount
     );
-    // 2. Transfer USDC from treasury to user
-    tx.add(
-      createTransferInstruction(
-        treasuryUSDC,
-        userUSDC,
-        this.treasuryAuthority,
-        Number(usdcAmount),
-        [],
-        TOKEN_PROGRAM_ID
-      )
-    );
-    return tx;
-  }
-
-  /**
-   * Get pUSDC balance for a user
-   */
-  async getPUSDCBalance(connection: Connection, user: PublicKey): Promise<bigint> {
-    return getTokenBalance(connection, PUSDC_MINT, user);
-  }
-
-  /**
-   * Get USDC balance for a user
-   */
-  async getUSDCBalance(connection: Connection, user: PublicKey): Promise<bigint> {
-    return getTokenBalance(connection, USDC_MINT, user);
-  }
-
-  /**
-   * Get total USDC in treasury
-   */
-  async getTreasuryReserves(connection: Connection): Promise<bigint> {
-    await this.initTreasuryUSDCAccount(connection);
-    return getTokenBalance(connection, USDC_MINT, this.treasuryAuthority);
-  }
-
-  /**
-   * Check if withdrawal is possible
-   */
-  async canWithdraw(connection: Connection, amount: bigint): Promise<boolean> {
-    const reserves = await this.getTreasuryReserves(connection);
-    return reserves >= amount;
+    return totalSupply === reserves * BigInt(DECIMAL_MULTIPLIER);
   }
 } 
